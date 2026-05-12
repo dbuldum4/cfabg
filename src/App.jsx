@@ -40,6 +40,12 @@ function makeGame(setup) {
   });
 }
 
+function getVisiblePreviewCells(game, piece, origin, transform) {
+  return transformCells(piece, transform)
+    .map(([x, y]) => ({ x: origin.x + x, y: origin.y + y }))
+    .filter((point) => point.x >= 0 && point.y >= 0 && point.x < game.boardSize && point.y < game.boardSize);
+}
+
 function App() {
   const [screen, setScreen] = useState("setup");
   const [setup, setSetup] = useState(DEFAULT_SETUP);
@@ -58,9 +64,15 @@ function App() {
 
   const currentPlayer = game.players[game.currentPlayerIndex];
   const selectedPiece = selectedPieceId ? PIECE_MAP.get(selectedPieceId) : null;
+  const pointerDragPieceId = pointerDrag?.pieceId;
+  const previewPieceId = pointerDragPieceId ?? selectedPieceId;
+  const previewPiece = previewPieceId ? PIECE_MAP.get(previewPieceId) : null;
   const setupPlayers = useMemo(() => getPlayersForCount(setup.playerCount), [setup.playerCount]);
   const selectedTransform = selectedPieceId
     ? (pieceTransforms[selectedPieceId] ?? DEFAULT_TRANSFORM)
+    : DEFAULT_TRANSFORM;
+  const previewTransform = previewPieceId
+    ? (pieceTransforms[previewPieceId] ?? DEFAULT_TRANSFORM)
     : DEFAULT_TRANSFORM;
 
   const currentLegalMoves = useMemo(() => {
@@ -70,15 +82,16 @@ function App() {
 
   const legalMoveCount = currentLegalMoves.length;
   const hoverMove = useMemo(() => {
-    if (!hoverCell || !selectedPiece || !currentPlayer || currentPlayer.type !== "human") return null;
-    const validation = validateMove(game, currentPlayer.id, selectedPiece.id, hoverCell, selectedTransform);
+    if (!hoverCell || !previewPiece || !currentPlayer || currentPlayer.type !== "human") return null;
+    const validation = validateMove(game, currentPlayer.id, previewPiece.id, hoverCell, previewTransform);
     return {
       ...validation,
+      absoluteCells: getVisiblePreviewCells(game, previewPiece, hoverCell, previewTransform),
       origin: hoverCell,
-      pieceId: selectedPiece.id,
-      transform: selectedTransform
+      pieceId: previewPiece.id,
+      transform: previewTransform
     };
-  }, [currentPlayer, game, hoverCell, selectedPiece, selectedTransform]);
+  }, [currentPlayer, game, hoverCell, previewPiece, previewTransform]);
 
   const ghostCells = hoverMove?.absoluteCells ?? hintMove?.absoluteCells ?? [];
   const ghostLegal = hoverMove ? hoverMove.legal : Boolean(hintMove);
@@ -170,25 +183,33 @@ function App() {
 
   useEffect(() => {
     if (!pointerDrag) return undefined;
+    const pieceId = pointerDragPieceId;
 
-    const getBoardCellFromPoint = (event) => {
-      const element = document.elementFromPoint(event.clientX, event.clientY);
-      const cell = element?.closest?.("[data-board-cell='true']");
-      if (!cell) return null;
+    const getBoardCellFromPoint = (clientX, clientY) => {
+      const board = document.querySelector("[data-board-grid='true']");
+      if (!board) return null;
+      const rect = board.getBoundingClientRect();
+      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+        return null;
+      }
+
+      const cellWidth = rect.width / game.boardSize;
+      const cellHeight = rect.height / game.boardSize;
       return {
-        x: Number(cell.dataset.x),
-        y: Number(cell.dataset.y)
+        x: Math.min(game.boardSize - 1, Math.max(0, Math.floor((clientX - rect.left) / cellWidth))),
+        y: Math.min(game.boardSize - 1, Math.max(0, Math.floor((clientY - rect.top) / cellHeight)))
       };
     };
 
     const handlePointerMove = (event) => {
-      const cell = getBoardCellFromPoint(event);
+      const cell = getBoardCellFromPoint(event.clientX, event.clientY);
       setPointerDrag((previous) =>
         previous
           ? {
               ...previous,
               x: event.clientX,
-              y: event.clientY
+              y: event.clientY,
+              overBoard: Boolean(cell)
             }
           : previous
       );
@@ -196,9 +217,9 @@ function App() {
     };
 
     const handlePointerUp = (event) => {
-      const cell = getBoardCellFromPoint(event);
+      const cell = getBoardCellFromPoint(event.clientX, event.clientY);
       if (cell) {
-        handlePieceDrop(cell, pointerDrag.pieceId);
+        handlePieceDrop(cell, pieceId);
       }
       setPointerDrag(null);
       setDragPieceId(null);
@@ -213,7 +234,7 @@ function App() {
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [pointerDrag, game, currentPlayer, selectedPieceId, pieceTransforms]);
+  }, [pointerDragPieceId, game, currentPlayer, selectedPieceId, pieceTransforms]);
 
   function updateSetupPlayer(index, patch) {
     setSetup((previous) => ({
@@ -433,7 +454,8 @@ function App() {
     setPointerDrag({
       pieceId,
       x: event.clientX,
-      y: event.clientY
+      y: event.clientY,
+      overBoard: false
     });
   }
 
@@ -666,7 +688,7 @@ function App() {
         </section>
       )}
 
-      {pointerDrag ? (
+      {pointerDrag && !pointerDrag.overBoard ? (
         <div
           className="drag-preview"
           style={{
@@ -880,6 +902,7 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
         </div>
         <div
           className="board-grid"
+          data-board-grid="true"
           style={{ "--board-size": game.boardSize }}
           onMouseLeave={onLeave}
           onBlur={onLeave}
@@ -889,6 +912,7 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
               const occupant = cell ? game.players.find((player) => player.id === cell.playerId) : null;
               const cornerPlayer = corners.get(`${x},${y}`);
               const isGhost = ghostMap.has(`${x},${y}`);
+              const stylePlayer = occupant ?? (isGhost ? currentPlayer : cornerPlayer);
               const classes = [
                 "board-cell",
                 occupant ? "occupied" : "",
@@ -910,7 +934,7 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
                   data-x={x}
                   data-y={y}
                   className={classes}
-                  style={occupant ? playerStyle(occupant) : cornerPlayer ? playerStyle(cornerPlayer) : undefined}
+                  style={stylePlayer ? playerStyle(stylePlayer) : undefined}
                   onMouseEnter={() => onHover({ x, y })}
                   onFocus={() => onHover({ x, y })}
                   onDragEnter={() => onHover({ x, y })}
