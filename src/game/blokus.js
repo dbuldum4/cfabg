@@ -202,6 +202,21 @@ export function transformCells(pieceOrCells, transform = {}) {
 }
 
 export function getOrientations(piece) {
+  return getCachedOrientations(piece).map((orientation) => ({
+    cells: orientation.cells.map(([x, y]) => [x, y]),
+    transform: { ...orientation.transform }
+  }));
+}
+
+function getCachedOrientations(piece) {
+  if (piece?.id && ORIENTATION_CACHE.has(piece.id)) {
+    return ORIENTATION_CACHE.get(piece.id);
+  }
+
+  return computeOrientations(piece);
+}
+
+function computeOrientations(piece) {
   const seen = new Map();
   const flips = [
     { flipX: false, flipY: false },
@@ -215,13 +230,15 @@ export function getOrientations(piece) {
       const cells = transformCells(piece, { ...flip, rotation });
       const key = cells.map(([x, y]) => `${x},${y}`).join("|");
       if (!seen.has(key)) {
-        seen.set(key, { cells, transform: { ...flip, rotation } });
+        seen.set(key, { cells, transform: { ...flip, rotation }, bounds: getPieceBounds(cells) });
       }
     }
   }
 
   return [...seen.values()];
 }
+
+const ORIENTATION_CACHE = new Map(PIECES.map((piece) => [piece.id, computeOrientations(piece)]));
 
 export function getPieceBounds(cells) {
   return {
@@ -261,17 +278,34 @@ export function validateMove(game, playerId, pieceId, origin, transform = {}) {
   }
 
   const cells = transformCells(piece, transform);
-  const absoluteCells = getAbsoluteCells(cells, origin);
+  return validatePreparedMove(game, player, origin, cells, hasPlayerPlaced(game, playerId, player));
+}
+
+function hasPlayerPlaced(game, playerId, player) {
+  return (player?.placedCells ?? 0) > 0 || playerHasPlaced(game.board, playerId);
+}
+
+function getBoardCell(board, boardSize, x, y) {
+  if (x < 0 || y < 0 || x >= boardSize || y >= boardSize) return null;
+  return board[y][x];
+}
+
+function validatePreparedMove(game, player, origin, cells, hasPlaced) {
+  const absoluteCells = new Array(cells.length);
 
   let touchesOwnCorner = false;
   let touchesOwnEdge = false;
   let coversStartingCorner = false;
 
-  for (const point of absoluteCells) {
-    if (!isInside(game.boardSize, point)) {
+  for (let index = 0; index < cells.length; index += 1) {
+    const [cellX, cellY] = cells[index];
+    const point = { x: origin.x + cellX, y: origin.y + cellY };
+    absoluteCells[index] = point;
+
+    if (point.x < 0 || point.y < 0 || point.x >= game.boardSize || point.y >= game.boardSize) {
       return { legal: false, reason: "Piece is outside the board." };
     }
-    if (getCell(game.board, point)) {
+    if (game.board[point.y][point.x]) {
       return { legal: false, reason: "Piece overlaps another piece." };
     }
     if (point.x === player.corner.x && point.y === player.corner.y) {
@@ -279,15 +313,15 @@ export function validateMove(game, playerId, pieceId, origin, transform = {}) {
     }
 
     for (const delta of ORTHOGONAL) {
-      const neighbor = getCell(game.board, { x: point.x + delta.x, y: point.y + delta.y });
-      if (neighbor?.playerId === playerId) {
+      const neighbor = getBoardCell(game.board, game.boardSize, point.x + delta.x, point.y + delta.y);
+      if (neighbor?.playerId === player.id) {
         touchesOwnEdge = true;
       }
     }
 
     for (const delta of DIAGONAL) {
-      const neighbor = getCell(game.board, { x: point.x + delta.x, y: point.y + delta.y });
-      if (neighbor?.playerId === playerId) {
+      const neighbor = getBoardCell(game.board, game.boardSize, point.x + delta.x, point.y + delta.y);
+      if (neighbor?.playerId === player.id) {
         touchesOwnCorner = true;
       }
     }
@@ -297,7 +331,7 @@ export function validateMove(game, playerId, pieceId, origin, transform = {}) {
     return { legal: false, reason: "Pieces of the same color cannot touch edges." };
   }
 
-  if (!playerHasPlaced(game.board, playerId)) {
+  if (!hasPlaced) {
     if (!coversStartingCorner) {
       return { legal: false, reason: "First move must cover the glowing starting corner." };
     }
@@ -391,11 +425,11 @@ export function updateGameStatus(game) {
   }
 }
 
-export function getFrontierPoints(game, playerId) {
+export function getFrontierPoints(game, playerId, hasPlaced = null) {
   const player = game.players.find((candidate) => candidate.id === playerId);
   const frontiers = new Map();
 
-  if (!playerHasPlaced(game.board, playerId)) {
+  if (!(hasPlaced ?? hasPlayerPlaced(game, playerId, player))) {
     return [player.corner];
   }
 
@@ -405,14 +439,21 @@ export function getFrontierPoints(game, playerId) {
       if (cell?.playerId !== playerId) continue;
 
       for (const delta of DIAGONAL) {
-        const point = { x: x + delta.x, y: y + delta.y };
-        if (!isInside(game.boardSize, point) || getCell(game.board, point)) continue;
-        const ownEdgeNeighbor = ORTHOGONAL.some((edge) => {
-          const neighbor = getCell(game.board, { x: point.x + edge.x, y: point.y + edge.y });
-          return neighbor?.playerId === playerId;
-        });
+        const pointX = x + delta.x;
+        const pointY = y + delta.y;
+        if (pointX < 0 || pointY < 0 || pointX >= game.boardSize || pointY >= game.boardSize) continue;
+        if (game.board[pointY][pointX]) continue;
+
+        let ownEdgeNeighbor = false;
+        for (const edge of ORTHOGONAL) {
+          const neighbor = getBoardCell(game.board, game.boardSize, pointX + edge.x, pointY + edge.y);
+          if (neighbor?.playerId === playerId) {
+            ownEdgeNeighbor = true;
+            break;
+          }
+        }
         if (!ownEdgeNeighbor) {
-          frontiers.set(`${point.x},${point.y}`, point);
+          frontiers.set(pointY * game.boardSize + pointX, { x: pointX, y: pointY });
         }
       }
     }
@@ -422,41 +463,72 @@ export function getFrontierPoints(game, playerId) {
 }
 
 export function getLegalMoves(game, playerId, options = {}) {
-  const player = game.players.find((candidate) => candidate.id === playerId);
-  if (!player || player.passed) return [];
-
-  const frontiers = getFrontierPoints(game, playerId);
   const moves = [];
+  forEachLegalMove(game, playerId, (move) => {
+    moves.push(cloneLegalMove(move));
+    return false;
+  }, options);
+  return moves;
+}
+
+function cloneLegalMove(move) {
+  return {
+    pieceId: move.pieceId,
+    origin: { ...move.origin },
+    transform: { ...move.transform },
+    cells: move.cells.map(([x, y]) => [x, y]),
+    absoluteCells: move.absoluteCells.map((point) => ({ ...point }))
+  };
+}
+
+export function forEachLegalMove(game, playerId, visitor, options = {}) {
+  const player = game.players.find((candidate) => candidate.id === playerId);
+  if (!player || player.passed || game.status !== "playing") return false;
+
+  const remainingSet = new Set(player.remaining);
   const pieceIds = options.pieceId ? [options.pieceId] : player.remaining;
+  const hasPlaced = hasPlayerPlaced(game, playerId, player);
+  const frontiers = getFrontierPoints(game, playerId, hasPlaced);
 
   for (const pieceId of pieceIds) {
     const piece = PIECE_MAP.get(pieceId);
-    if (!piece || !player.remaining.includes(pieceId)) continue;
+    if (!piece || !remainingSet.has(pieceId)) continue;
 
-    for (const orientation of getOrientations(piece)) {
+    for (const orientation of getCachedOrientations(piece)) {
       for (const target of frontiers) {
         for (const [cellX, cellY] of orientation.cells) {
           const origin = { x: target.x - cellX, y: target.y - cellY };
-          const validation = validateMove(game, playerId, pieceId, origin, orientation.transform);
+          const validation = validatePreparedMove(game, player, origin, orientation.cells, hasPlaced);
           if (validation.legal) {
-            moves.push({
+            const shouldStop = visitor({
               pieceId,
               origin,
               transform: orientation.transform,
               cells: orientation.cells,
+              bounds: orientation.bounds,
               absoluteCells: validation.absoluteCells
             });
+            if (shouldStop) return true;
           }
         }
       }
     }
   }
 
-  return moves;
+  return false;
+}
+
+export function getLegalMoveCount(game, playerId, options = {}) {
+  let count = 0;
+  forEachLegalMove(game, playerId, () => {
+    count += 1;
+    return false;
+  }, options);
+  return count;
 }
 
 export function hasAnyLegalMove(game, playerId) {
-  return getLegalMoves(game, playerId).length > 0;
+  return forEachLegalMove(game, playerId, () => true);
 }
 
 export function getPlacedCellsForPlayer(board, playerId) {

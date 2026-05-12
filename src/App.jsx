@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import {
   createGame,
   getFinalScore,
-  getLegalMoves,
+  getLegalMoveCount,
   getPieceBounds,
   getPlayersForCount,
   getRemainingSquares,
@@ -18,6 +18,7 @@ import {
 import { chooseCpuMove, summarizeCpuPosition } from "./game/cpu.js";
 
 const STORAGE_KEY = "aqua-blokus-save";
+const BOARD_LABELS = "ABCDEFGHIJKLMNOPQRST".split("");
 const DEFAULT_SETUP = {
   playerCount: 4,
   players: [
@@ -75,12 +76,10 @@ function App() {
     ? (pieceTransforms[previewPieceId] ?? DEFAULT_TRANSFORM)
     : DEFAULT_TRANSFORM;
 
-  const currentLegalMoves = useMemo(() => {
-    if (!currentPlayer || game.status !== "playing") return [];
-    return getLegalMoves(game, currentPlayer.id);
+  const legalMoveCount = useMemo(() => {
+    if (!currentPlayer || game.status !== "playing") return 0;
+    return getLegalMoveCount(game, currentPlayer.id);
   }, [game, currentPlayer]);
-
-  const legalMoveCount = currentLegalMoves.length;
   const hoverMove = useMemo(() => {
     if (!hoverCell || !previewPiece || !currentPlayer || currentPlayer.type !== "human") return null;
     const validation = validateMove(game, currentPlayer.id, previewPiece.id, hoverCell, previewTransform);
@@ -272,6 +271,7 @@ function App() {
     setScreen("setup");
     setCpuThinking(false);
     setDragPieceId(null);
+    setPointerDrag(null);
     setHoverCell(null);
     setHintMove(null);
     setNotice("Choose the local players, then start a new match.");
@@ -471,8 +471,14 @@ function App() {
     placeAt(cell, droppedPieceId);
   }
 
-  const currentSummary = currentPlayer ? summarizeCpuPosition(game, currentPlayer.id) : null;
-  const finalScores = game.players.map((player) => ({ player, ...getFinalScore(player) }));
+  const currentSummary = useMemo(
+    () => (currentPlayer ? summarizeCpuPosition(game, currentPlayer.id, legalMoveCount) : null),
+    [currentPlayer, game, legalMoveCount]
+  );
+  const finalScores = useMemo(
+    () => game.players.map((player) => ({ player, ...getFinalScore(player) })),
+    [game.players]
+  );
 
   return (
     <main className="aqua-app">
@@ -705,7 +711,7 @@ function App() {
         </div>
       ) : null}
 
-      {game.status === "finished" ? (
+      {screen === "play" && game.status === "finished" ? (
         <div className="results-modal" role="dialog" aria-modal="true" aria-labelledby="results-title">
           <div className="results-card glass-panel">
             <h2 id="results-title">Final Scores</h2>
@@ -807,6 +813,8 @@ function PiecePanel({
   onDragEnd,
   onPointerDown
 }) {
+  const remainingPieces = useMemo(() => new Set(currentPlayer?.remaining ?? []), [currentPlayer?.remaining]);
+
   return (
     <aside className="piece-panel glass-panel">
       <div className="tray-heading">
@@ -822,7 +830,7 @@ function PiecePanel({
 
       <div className="piece-bank" aria-label="Draggable remaining pieces">
         {PIECES.map((piece) => {
-          const available = Boolean(currentPlayer?.remaining.includes(piece.id));
+          const available = remainingPieces.has(piece.id);
           const playable = available && currentPlayer?.type === "human" && gameStatus === "playing";
           const pieceTransform = pieceTransforms[piece.id] ?? DEFAULT_TRANSFORM;
           return (
@@ -885,7 +893,14 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
     () => new Map(game.players.map((player) => [`${player.corner.x},${player.corner.y}`, player])),
     [game.players]
   );
-  const labels = "ABCDEFGHIJKLMNOPQRST".split("");
+  const playerById = useMemo(
+    () => new Map(game.players.map((player) => [player.id, player])),
+    [game.players]
+  );
+  const playerStyles = useMemo(
+    () => new Map(game.players.map((player) => [player.id, playerStyle(player)])),
+    [game.players]
+  );
 
   return (
     <div className="board-frame">
@@ -896,7 +911,7 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
       </div>
       <div className="board-row">
         <div className="side-coords">
-          {labels.map((label) => (
+          {BOARD_LABELS.map((label) => (
             <span key={label}>{label}</span>
           ))}
         </div>
@@ -909,10 +924,11 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
         >
           {game.board.map((row, y) =>
             row.map((cell, x) => {
-              const occupant = cell ? game.players.find((player) => player.id === cell.playerId) : null;
+              const occupant = cell ? playerById.get(cell.playerId) : null;
               const cornerPlayer = corners.get(`${x},${y}`);
               const isGhost = ghostMap.has(`${x},${y}`);
               const stylePlayer = occupant ?? (isGhost ? currentPlayer : cornerPlayer);
+              const cellStyle = stylePlayer ? playerStyles.get(stylePlayer.id) : undefined;
               const classes = [
                 "board-cell",
                 occupant ? "occupied" : "",
@@ -934,7 +950,7 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
                   data-x={x}
                   data-y={y}
                   className={classes}
-                  style={stylePlayer ? playerStyle(stylePlayer) : undefined}
+                  style={cellStyle}
                   onMouseEnter={() => onHover({ x, y })}
                   onFocus={() => onHover({ x, y })}
                   onDragEnter={() => onHover({ x, y })}
@@ -954,7 +970,7 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
                   onClick={() => onPlace({ x, y })}
                   disabled={game.status !== "playing" || currentPlayer?.type !== "human"}
                 >
-                  {cornerPlayer && !occupant ? <span className="corner-star">✦</span> : null}
+                  {cornerPlayer ? <span className="corner-star">✦</span> : null}
                 </button>
               );
             })
@@ -991,9 +1007,13 @@ function PlayerCard({ player, active, winner }) {
 }
 
 function MiniPiece({ piece, color, transform = DEFAULT_TRANSFORM, disabled = false }) {
-  const cells = transformCells(piece, transform);
-  const bounds = getPieceBounds(cells);
-  const cellSet = new Set(cells.map(([x, y]) => `${x},${y}`));
+  const { bounds, cellSet } = useMemo(() => {
+    const cells = transformCells(piece, transform);
+    return {
+      bounds: getPieceBounds(cells),
+      cellSet: new Set(cells.map(([x, y]) => `${x},${y}`))
+    };
+  }, [piece, transform]);
 
   return (
     <span

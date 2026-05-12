@@ -712,6 +712,11 @@ h1 {
     #edf1f7;
 }
 
+.board-cell > * {
+  position: relative;
+  z-index: 1;
+}
+
 .board-cell:focus-visible {
   z-index: 3;
   outline: 2px solid rgba(255, 255, 255, 0.95);
@@ -765,7 +770,15 @@ h1 {
 
 .board-cell.corner-cell:not(.ghost) {
   background:
-    radial-gradient(circle, color-mix(in srgb, var(--player-light) 45%, white) 0, transparent 42%),
+    radial-gradient(circle, color-mix(in srgb, var(--player-light) 64%, white) 0, transparent 47%),
+    linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(207, 214, 226, 0.78));
+}
+
+.board-cell.corner-cell.occupied:not(.ghost) {
+  background:
+    radial-gradient(circle at 28% 18%, rgba(255, 255, 255, 0.96), transparent 15%),
+    linear-gradient(145deg, color-mix(in srgb, var(--player-light) 86%, transparent), color-mix(in srgb, var(--player-base) 88%, transparent) 46%, color-mix(in srgb, var(--player-deep) 92%, transparent)),
+    radial-gradient(circle, color-mix(in srgb, var(--player-light) 64%, white) 0, transparent 47%),
     linear-gradient(145deg, rgba(255, 255, 255, 0.82), rgba(207, 214, 226, 0.78));
 }
 
@@ -774,9 +787,22 @@ h1 {
   inset: 0;
   display: grid;
   place-items: center;
-  color: var(--player-base);
-  font-size: clamp(0.6rem, 1.4vw, 1.1rem);
-  text-shadow: 0 0 9px var(--player-shadow);
+  color: color-mix(in srgb, var(--player-light) 45%, white);
+  font-size: clamp(0.85rem, 2vw, 1.45rem);
+  font-weight: 900;
+  line-height: 1;
+  opacity: 0.92;
+  text-shadow:
+    0 1px 2px rgba(255, 255, 255, 0.92),
+    0 0 11px var(--player-shadow),
+    0 0 20px color-mix(in srgb, var(--player-light) 72%, transparent);
+  pointer-events: none;
+}
+
+.board-cell.occupied .corner-star {
+  z-index: 0;
+  opacity: 0.68;
+  mix-blend-mode: screen;
 }
 
 .status-panel {

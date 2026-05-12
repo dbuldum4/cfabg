@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   createGame,
+  getLegalMoveCount,
   getLegalMoves,
   passPlayer,
   placeMove,
@@ -73,6 +74,44 @@ test("legal move generator returns opening moves for every starting player", () 
   for (const player of game.players) {
     assert.ok(getLegalMoves(game, player.id).length > 0, `${player.id} should have legal opening moves`);
   }
+});
+
+test("legal move count matches generated legal moves", () => {
+  let game = createGame({
+    playerCount: 2,
+    players: [{ type: "human" }, { type: "cpu" }]
+  });
+
+  game = placeMove(game, "blue", {
+    pieceId: "mono",
+    origin: { x: 0, y: 0 },
+    transform: { rotation: 0 }
+  }).game;
+
+  game = placeMove(game, "red", {
+    pieceId: "mono",
+    origin: { x: 19, y: 19 },
+    transform: { rotation: 0 }
+  }).game;
+
+  assert.equal(getLegalMoveCount(game, "blue"), getLegalMoves(game, "blue").length);
+  assert.equal(getLegalMoveCount(game, "red"), getLegalMoves(game, "red").length);
+});
+
+test("generated move data can be mutated without corrupting future move generation", () => {
+  const game = createGame({
+    playerCount: 2,
+    players: [{ type: "human" }, { type: "cpu" }]
+  });
+
+  const moves = getLegalMoves(game, "blue");
+  const originalRotation = moves[0].transform.rotation;
+  moves[0].transform.rotation = 999;
+  moves[0].cells[0][0] = 999;
+
+  const freshMoves = getLegalMoves(game, "blue");
+  assert.equal(freshMoves[0].transform.rotation, originalRotation);
+  assert.notEqual(freshMoves[0].cells[0][0], 999);
 });
 
 test("cannot pass while legal moves are available", () => {
