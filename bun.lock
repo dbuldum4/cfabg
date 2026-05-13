@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "aqua-blokus",
+      "name": "cool-frutiger-aero-block-game",
       "dependencies": {
         "@vitejs/plugin-react": "^5.1.0",
         "react": "^19.2.1",

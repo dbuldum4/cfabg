@@ -1,6 +1,6 @@
-# Aqua Blokus
+# Cool Frutiger Aero Block Game
 
-A local Blokus-style web game with a Frutiger Aero / Aqua / Vista-inspired interface. It supports 2, 3, or 4 local players with any mix of humans and CPUs.
+A local block-placement strategy web game with a Frutiger Aero / Aqua / Vista-inspired interface. It supports 2, 3, or 4 local players with any mix of humans and CPUs.
 
 ## Run locally
 

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   createGame,
   getFinalScore,
@@ -17,7 +17,8 @@ import {
 } from "./game/blokus.js";
 import { chooseCpuMove, summarizeCpuPosition } from "./game/cpu.js";
 
-const STORAGE_KEY = "aqua-blokus-save";
+const STORAGE_KEY = "cool-frutiger-aero-block-game-save";
+const MODE_STORAGE_KEY = "cool-frutiger-aero-block-game-darker-mode";
 const BOARD_LABELS = "ABCDEFGHIJKLMNOPQRST".split("");
 const DEFAULT_SETUP = {
   playerCount: 4,
@@ -41,10 +42,29 @@ function makeGame(setup) {
   });
 }
 
-function getVisiblePreviewCells(game, piece, origin, transform) {
-  return transformCells(piece, transform)
-    .map(([x, y]) => ({ x: origin.x + x, y: origin.y + y }))
-    .filter((point) => point.x >= 0 && point.y >= 0 && point.x < game.boardSize && point.y < game.boardSize);
+function getVisiblePreviewCells(game, cells, origin) {
+  const visibleCells = [];
+
+  for (const [x, y] of cells) {
+    const point = { x: origin.x + x, y: origin.y + y };
+    if (point.x >= 0 && point.y >= 0 && point.x < game.boardSize && point.y < game.boardSize) {
+      visibleCells.push(point);
+    }
+  }
+
+  return visibleCells;
+}
+
+function sameCell(a, b) {
+  if (!a || !b) return a === b;
+  return a.x === b.x && a.y === b.y;
+}
+
+function useEventCallback(callback) {
+  const callbackRef = useRef(callback);
+  callbackRef.current = callback;
+
+  return useCallback((...args) => callbackRef.current(...args), []);
 }
 
 function App() {
@@ -62,6 +82,11 @@ function App() {
   const [cpuThinking, setCpuThinking] = useState(false);
   const [elapsed, setElapsed] = useState(0);
   const [hasSave, setHasSave] = useState(() => Boolean(localStorage.getItem(STORAGE_KEY)));
+  const [darkerMode, setDarkerMode] = useState(() => localStorage.getItem(MODE_STORAGE_KEY) === "true");
+  const boardGridRef = useRef(null);
+  const dragPreviewRef = useRef(null);
+  const dragAnimationFrameRef = useRef(null);
+  const dragPreviewPointRef = useRef(null);
 
   const currentPlayer = game.players[game.currentPlayerIndex];
   const selectedPiece = selectedPieceId ? PIECE_MAP.get(selectedPieceId) : null;
@@ -75,6 +100,27 @@ function App() {
   const previewTransform = previewPieceId
     ? (pieceTransforms[previewPieceId] ?? DEFAULT_TRANSFORM)
     : DEFAULT_TRANSFORM;
+  const previewCells = useMemo(
+    () => (previewPiece ? transformCells(previewPiece, previewTransform) : []),
+    [previewPiece, previewTransform]
+  );
+  const updateHoverCell = useCallback((cell) => {
+    setHoverCell((previous) => (sameCell(previous, cell) ? previous : cell));
+  }, []);
+  const clearHoverCell = useCallback(() => updateHoverCell(null), [updateHoverCell]);
+  const selectPiece = useCallback((pieceId) => {
+    setSelectedPieceId(pieceId);
+    setHintMove(null);
+  }, []);
+  const rotatePieceEvent = useEventCallback(rotatePiece);
+  const flipHorizontalEvent = useEventCallback(flipHorizontal);
+  const flipVerticalEvent = useEventCallback(flipVertical);
+  const undoMoveEvent = useEventCallback(undoMove);
+  const placeAtEvent = useEventCallback(placeAt);
+  const dropPieceEvent = useEventCallback(handlePieceDrop);
+  const dragStartEvent = useEventCallback(handlePieceDragStart);
+  const dragEndEvent = useEventCallback(handlePieceDragEnd);
+  const pointerDownEvent = useEventCallback(handlePiecePointerDown);
 
   const legalMoveCount = useMemo(() => {
     if (!currentPlayer || game.status !== "playing") return 0;
@@ -85,12 +131,12 @@ function App() {
     const validation = validateMove(game, currentPlayer.id, previewPiece.id, hoverCell, previewTransform);
     return {
       ...validation,
-      absoluteCells: getVisiblePreviewCells(game, previewPiece, hoverCell, previewTransform),
+      absoluteCells: getVisiblePreviewCells(game, previewCells, hoverCell),
       origin: hoverCell,
       pieceId: previewPiece.id,
       transform: previewTransform
     };
-  }, [currentPlayer, game, hoverCell, previewPiece, previewTransform]);
+  }, [currentPlayer, game, hoverCell, previewCells, previewPiece, previewTransform]);
 
   const ghostCells = hoverMove?.absoluteCells ?? hintMove?.absoluteCells ?? [];
   const ghostLegal = hoverMove ? hoverMove.legal : Boolean(hintMove);
@@ -101,6 +147,11 @@ function App() {
     }, 1000);
     return () => window.clearInterval(interval);
   }, [game.startedAt]);
+
+  useEffect(() => {
+    document.documentElement.dataset.visualMode = darkerMode ? "deep" : "aero";
+    localStorage.setItem(MODE_STORAGE_KEY, darkerMode ? "true" : "false");
+  }, [darkerMode]);
 
   useEffect(() => {
     if (!currentPlayer) return;
@@ -160,80 +211,116 @@ function App() {
 
       if (event.key.toLowerCase() === "r") {
         event.preventDefault();
-        rotatePiece();
+        rotatePieceEvent();
       }
       if (event.key.toLowerCase() === "f") {
         event.preventDefault();
-        flipHorizontal();
+        flipHorizontalEvent();
       }
       if (event.key.toLowerCase() === "v") {
         event.preventDefault();
-        flipVertical();
+        flipVerticalEvent();
       }
       if (event.key.toLowerCase() === "u") {
         event.preventDefault();
-        undoMove();
+        undoMoveEvent();
       }
     };
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  });
+  }, [currentPlayer?.type, game.status, flipHorizontalEvent, flipVerticalEvent, rotatePieceEvent, undoMoveEvent]);
 
   useEffect(() => {
-    if (!pointerDrag) return undefined;
+    if (!pointerDragPieceId) return undefined;
     const pieceId = pointerDragPieceId;
+    let boardMetrics = null;
+
+    const refreshBoardMetrics = () => {
+      const board = boardGridRef.current;
+      if (!board) {
+        boardMetrics = null;
+        return;
+      }
+
+      const rect = board.getBoundingClientRect();
+      boardMetrics = {
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        bottom: rect.bottom,
+        cellWidth: rect.width / game.boardSize,
+        cellHeight: rect.height / game.boardSize
+      };
+    };
 
     const getBoardCellFromPoint = (clientX, clientY) => {
-      const board = document.querySelector("[data-board-grid='true']");
-      if (!board) return null;
-      const rect = board.getBoundingClientRect();
-      if (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+      if (!boardMetrics) refreshBoardMetrics();
+      if (!boardMetrics) return null;
+      if (clientX < boardMetrics.left || clientX > boardMetrics.right || clientY < boardMetrics.top || clientY > boardMetrics.bottom) {
         return null;
       }
 
-      const cellWidth = rect.width / game.boardSize;
-      const cellHeight = rect.height / game.boardSize;
       return {
-        x: Math.min(game.boardSize - 1, Math.max(0, Math.floor((clientX - rect.left) / cellWidth))),
-        y: Math.min(game.boardSize - 1, Math.max(0, Math.floor((clientY - rect.top) / cellHeight)))
+        x: Math.min(game.boardSize - 1, Math.max(0, Math.floor((clientX - boardMetrics.left) / boardMetrics.cellWidth))),
+        y: Math.min(game.boardSize - 1, Math.max(0, Math.floor((clientY - boardMetrics.top) / boardMetrics.cellHeight)))
       };
+    };
+
+    const scheduleDragPreviewPosition = (x, y) => {
+      dragPreviewPointRef.current = { x, y };
+      if (dragAnimationFrameRef.current !== null) return;
+
+      dragAnimationFrameRef.current = window.requestAnimationFrame(() => {
+        dragAnimationFrameRef.current = null;
+        const preview = dragPreviewRef.current;
+        const point = dragPreviewPointRef.current;
+        if (!preview || !point) return;
+        preview.style.setProperty("--preview-x", `${point.x}px`);
+        preview.style.setProperty("--preview-y", `${point.y}px`);
+      });
     };
 
     const handlePointerMove = (event) => {
       const cell = getBoardCellFromPoint(event.clientX, event.clientY);
+      scheduleDragPreviewPosition(event.clientX, event.clientY);
       setPointerDrag((previous) =>
-        previous
-          ? {
-              ...previous,
-              x: event.clientX,
-              y: event.clientY,
-              overBoard: Boolean(cell)
-            }
+        previous && previous.overBoard !== Boolean(cell)
+          ? { ...previous, x: event.clientX, y: event.clientY, overBoard: Boolean(cell) }
           : previous
       );
-      setHoverCell(cell);
+      updateHoverCell(cell);
     };
 
     const handlePointerUp = (event) => {
       const cell = getBoardCellFromPoint(event.clientX, event.clientY);
       if (cell) {
-        handlePieceDrop(cell, pieceId);
+        dropPieceEvent(cell, pieceId);
       }
       setPointerDrag(null);
       setDragPieceId(null);
+      dragPreviewPointRef.current = null;
     };
 
-    window.addEventListener("pointermove", handlePointerMove);
+    refreshBoardMetrics();
+    window.addEventListener("resize", refreshBoardMetrics);
+    window.addEventListener("scroll", refreshBoardMetrics, { capture: true, passive: true });
+    window.addEventListener("pointermove", handlePointerMove, { passive: true });
     window.addEventListener("pointerup", handlePointerUp, { once: true });
     window.addEventListener("pointercancel", handlePointerUp, { once: true });
 
     return () => {
+      if (dragAnimationFrameRef.current) {
+        window.cancelAnimationFrame(dragAnimationFrameRef.current);
+        dragAnimationFrameRef.current = null;
+      }
+      window.removeEventListener("resize", refreshBoardMetrics);
+      window.removeEventListener("scroll", refreshBoardMetrics, { capture: true });
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", handlePointerUp);
       window.removeEventListener("pointercancel", handlePointerUp);
     };
-  }, [pointerDragPieceId, game, currentPlayer, selectedPieceId, pieceTransforms]);
+  }, [dropPieceEvent, game.boardSize, pointerDragPieceId, updateHoverCell]);
 
   function updateSetupPlayer(index, patch) {
     setSetup((previous) => ({
@@ -438,7 +525,7 @@ function App() {
     setDragPieceId(pieceId);
     setHintMove(null);
     event.dataTransfer.effectAllowed = "copy";
-    event.dataTransfer.setData("application/x-aqua-blokus-piece", pieceId);
+    event.dataTransfer.setData("application/x-cool-frutiger-aero-block-game-piece", pieceId);
     event.dataTransfer.setData("text/plain", pieceId);
   }
 
@@ -451,6 +538,7 @@ function App() {
     setSelectedPieceId(pieceId);
     setDragPieceId(pieceId);
     setHintMove(null);
+    dragPreviewPointRef.current = { x: event.clientX, y: event.clientY };
     setPointerDrag({
       pieceId,
       x: event.clientX,
@@ -481,7 +569,7 @@ function App() {
   );
 
   return (
-    <main className="aqua-app">
+    <main className={`aqua-app ${darkerMode ? "darker-mode" : ""}`}>
       <BackgroundDecor />
 
       <header className="top-bar glass-panel">
@@ -493,12 +581,20 @@ function App() {
             <span />
           </div>
           <div>
-            <h1>Aqua Blokus</h1>
+            <h1>Cool Frutiger Aero Block Game</h1>
             <p>{game.status === "finished" ? "Final scores" : "Local strategy"}</p>
           </div>
         </div>
 
         <div className="top-actions" aria-label="Game actions">
+          <button
+            className="aqua-button compact mode-toggle"
+            aria-pressed={darkerMode}
+            onClick={() => setDarkerMode((enabled) => !enabled)}
+          >
+            <Icon name={darkerMode ? "sun" : "moon"} />
+            {darkerMode ? "Bright" : "Darker"}
+          </button>
           <button className="aqua-button compact" onClick={saveGame} disabled={screen !== "play"}>
             <Icon name="save" />
             Save
@@ -583,14 +679,11 @@ function App() {
             pieceTransforms={pieceTransforms}
             dragPieceId={dragPieceId}
             gameStatus={game.status}
-            onSelect={(pieceId) => {
-              setSelectedPieceId(pieceId);
-              setHintMove(null);
-            }}
-            onRotate={rotatePiece}
-            onDragStart={handlePieceDragStart}
-            onDragEnd={handlePieceDragEnd}
-            onPointerDown={handlePiecePointerDown}
+            onSelect={selectPiece}
+            onRotate={rotatePieceEvent}
+            onDragStart={dragStartEvent}
+            onDragEnd={dragEndEvent}
+            onPointerDown={pointerDownEvent}
           />
 
           <section className="board-zone glass-panel">
@@ -605,10 +698,11 @@ function App() {
               ghostCells={ghostCells}
               ghostLegal={ghostLegal}
               currentPlayer={currentPlayer}
-              onHover={setHoverCell}
-              onLeave={() => setHoverCell(null)}
-              onPlace={placeAt}
-              onDropPiece={handlePieceDrop}
+              gridRef={boardGridRef}
+              onHover={updateHoverCell}
+              onLeave={clearHoverCell}
+              onPlace={placeAtEvent}
+              onDropPiece={dropPieceEvent}
             />
           </section>
 
@@ -696,10 +790,11 @@ function App() {
 
       {pointerDrag && !pointerDrag.overBoard ? (
         <div
+          ref={dragPreviewRef}
           className="drag-preview"
           style={{
-            left: pointerDrag.x,
-            top: pointerDrag.y,
+            "--preview-x": `${(dragPreviewPointRef.current ?? pointerDrag).x}px`,
+            "--preview-y": `${(dragPreviewPointRef.current ?? pointerDrag).y}px`,
             ...playerStyle(currentPlayer)
           }}
         >
@@ -786,7 +881,7 @@ function SetupPlayerRow({ index, player, setup, onChange }) {
   );
 }
 
-function BoardHeader({ currentPlayer, legalMoveCount, cpuThinking, status }) {
+const BoardHeader = memo(function BoardHeader({ currentPlayer, legalMoveCount, cpuThinking, status }) {
   return (
     <div className="board-header">
       <div>
@@ -799,9 +894,9 @@ function BoardHeader({ currentPlayer, legalMoveCount, cpuThinking, status }) {
       </div>
     </div>
   );
-}
+});
 
-function PiecePanel({
+const PiecePanel = memo(function PiecePanel({
   currentPlayer,
   selectedPieceId,
   pieceTransforms,
@@ -882,13 +977,57 @@ function PiecePanel({
       </div>
     </aside>
   );
+});
+
+function Board({ game, ghostCells, ghostLegal, currentPlayer, gridRef, onHover, onLeave, onPlace, onDropPiece }) {
+  return (
+    <div className="board-frame">
+      <BoardTopCoords boardSize={game.boardSize} />
+      <div className="board-row">
+        <BoardSideCoords boardSize={game.boardSize} />
+        <div className="board-grid-wrap">
+          <BoardGrid
+            game={game}
+            currentPlayer={currentPlayer}
+            gridRef={gridRef}
+            onHover={onHover}
+            onLeave={onLeave}
+            onPlace={onPlace}
+            onDropPiece={onDropPiece}
+          />
+          <BoardPreview
+            boardSize={game.boardSize}
+            cells={ghostCells}
+            legal={ghostLegal}
+            player={currentPlayer}
+          />
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, onPlace, onDropPiece }) {
-  const ghostMap = useMemo(
-    () => new Map(ghostCells.map((point) => [`${point.x},${point.y}`, point])),
-    [ghostCells]
+const BoardTopCoords = memo(function BoardTopCoords({ boardSize }) {
+  return (
+    <div className="top-coords">
+      {Array.from({ length: boardSize }, (_, index) => (
+        <span key={index}>{index + 1}</span>
+      ))}
+    </div>
   );
+});
+
+const BoardSideCoords = memo(function BoardSideCoords({ boardSize }) {
+  return (
+    <div className="side-coords">
+      {BOARD_LABELS.slice(0, boardSize).map((label) => (
+        <span key={label}>{label}</span>
+      ))}
+    </div>
+  );
+});
+
+const BoardGrid = memo(function BoardGrid({ game, currentPlayer, gridRef, onHover, onLeave, onPlace, onDropPiece }) {
   const corners = useMemo(
     () => new Map(game.players.map((player) => [`${player.corner.x},${player.corner.y}`, player])),
     [game.players]
@@ -903,85 +1042,94 @@ function Board({ game, ghostCells, ghostLegal, currentPlayer, onHover, onLeave, 
   );
 
   return (
-    <div className="board-frame">
-      <div className="top-coords">
-        {Array.from({ length: game.boardSize }, (_, index) => (
-          <span key={index}>{index + 1}</span>
-        ))}
-      </div>
-      <div className="board-row">
-        <div className="side-coords">
-          {BOARD_LABELS.map((label) => (
-            <span key={label}>{label}</span>
-          ))}
-        </div>
-        <div
-          className="board-grid"
-          data-board-grid="true"
-          style={{ "--board-size": game.boardSize }}
-          onMouseLeave={onLeave}
-          onBlur={onLeave}
-        >
-          {game.board.map((row, y) =>
-            row.map((cell, x) => {
-              const occupant = cell ? playerById.get(cell.playerId) : null;
-              const cornerPlayer = corners.get(`${x},${y}`);
-              const isGhost = ghostMap.has(`${x},${y}`);
-              const stylePlayer = occupant ?? (isGhost ? currentPlayer : cornerPlayer);
-              const cellStyle = stylePlayer ? playerStyles.get(stylePlayer.id) : undefined;
-              const classes = [
-                "board-cell",
-                occupant ? "occupied" : "",
-                isGhost ? "ghost" : "",
-                isGhost && ghostLegal ? "legal" : "",
-                isGhost && !ghostLegal ? "illegal" : "",
-                cornerPlayer ? "corner-cell" : ""
-              ]
-                .filter(Boolean)
-                .join(" ");
+    <div
+      ref={gridRef}
+      className="board-grid"
+      data-board-grid="true"
+      style={{ "--board-size": game.boardSize }}
+      onMouseLeave={onLeave}
+      onBlur={onLeave}
+    >
+      {game.board.map((row, y) =>
+        row.map((cell, x) => {
+          const occupant = cell ? playerById.get(cell.playerId) : null;
+          const cornerPlayer = corners.get(`${x},${y}`);
+          const stylePlayer = occupant ?? cornerPlayer;
+          const cellStyle = stylePlayer ? playerStyles.get(stylePlayer.id) : undefined;
+          const classes = [
+            "board-cell",
+            occupant ? "occupied" : "",
+            cornerPlayer ? "corner-cell" : ""
+          ]
+            .filter(Boolean)
+            .join(" ");
 
-              return (
-                <button
-                  type="button"
-                  aria-label={`Column ${x + 1}, row ${y + 1}`}
-                  key={`${x}-${y}`}
-                  data-testid={`cell-${x}-${y}`}
-                  data-board-cell="true"
-                  data-x={x}
-                  data-y={y}
-                  className={classes}
-                  style={cellStyle}
-                  onMouseEnter={() => onHover({ x, y })}
-                  onFocus={() => onHover({ x, y })}
-                  onDragEnter={() => onHover({ x, y })}
-                  onDragOver={(event) => {
-                    if (game.status !== "playing" || currentPlayer?.type !== "human") return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "copy";
-                    onHover({ x, y });
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const pieceId =
-                      event.dataTransfer.getData("application/x-aqua-blokus-piece") ||
-                      event.dataTransfer.getData("text/plain");
-                    onDropPiece({ x, y }, pieceId);
-                  }}
-                  onClick={() => onPlace({ x, y })}
-                  disabled={game.status !== "playing" || currentPlayer?.type !== "human"}
-                >
-                  {cornerPlayer ? <span className="corner-star">✦</span> : null}
-                </button>
-              );
-            })
-          )}
-        </div>
-      </div>
+          return (
+            <button
+              type="button"
+              aria-label={`Column ${x + 1}, row ${y + 1}`}
+              key={`${x}-${y}`}
+              data-testid={`cell-${x}-${y}`}
+              data-board-cell="true"
+              data-x={x}
+              data-y={y}
+              className={classes}
+              style={cellStyle}
+              onMouseEnter={() => onHover({ x, y })}
+              onFocus={() => onHover({ x, y })}
+              onDragEnter={() => onHover({ x, y })}
+              onDragOver={(event) => {
+                if (game.status !== "playing" || currentPlayer?.type !== "human") return;
+                event.preventDefault();
+                event.dataTransfer.dropEffect = "copy";
+                onHover({ x, y });
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                const pieceId =
+                  event.dataTransfer.getData("application/x-cool-frutiger-aero-block-game-piece") ||
+                  event.dataTransfer.getData("text/plain");
+                onDropPiece({ x, y }, pieceId);
+              }}
+              onClick={() => onPlace({ x, y })}
+              disabled={game.status !== "playing" || currentPlayer?.type !== "human"}
+            >
+              {cornerPlayer ? <span className="corner-star">✦</span> : null}
+            </button>
+          );
+        })
+      )}
     </div>
   );
-}
+});
 
-function PlayerCard({ player, active, winner }) {
+const BoardPreview = memo(function BoardPreview({ boardSize, cells, legal, player }) {
+  if (cells.length === 0) return null;
+
+  return (
+    <div
+      className="board-preview-layer"
+      aria-hidden="true"
+      style={{
+        "--board-size": boardSize,
+        ...playerStyle(player)
+      }}
+    >
+      {cells.map((point) => (
+        <span
+          key={`${point.x}-${point.y}`}
+          className={`board-preview-cell ${legal ? "legal" : "illegal"}`}
+          style={{
+            gridColumn: `${point.x + 1}`,
+            gridRow: `${point.y + 1}`
+          }}
+        />
+      ))}
+    </div>
+  );
+});
+
+const PlayerCard = memo(function PlayerCard({ player, active, winner }) {
   const score = getFinalScore(player);
   const remainingSquares = getRemainingSquares(player);
   return (
@@ -1004,9 +1152,9 @@ function PlayerCard({ player, active, winner }) {
       </div>
     </article>
   );
-}
+});
 
-function MiniPiece({ piece, color, transform = DEFAULT_TRANSFORM, disabled = false }) {
+const MiniPiece = memo(function MiniPiece({ piece, color, transform = DEFAULT_TRANSFORM, disabled = false }) {
   const { bounds, cellSet } = useMemo(() => {
     const cells = transformCells(piece, transform);
     return {
@@ -1033,7 +1181,7 @@ function MiniPiece({ piece, color, transform = DEFAULT_TRANSFORM, disabled = fal
       })}
     </span>
   );
-}
+});
 
 function Icon({ name }) {
   const paths = {
@@ -1050,7 +1198,9 @@ function Icon({ name }) {
     skip: "M5 5l8 7-8 7z M15 5h4v14h-4z",
     trophy: "M8 4h8v4a4 4 0 0 1-8 0z M6 5H3v2a4 4 0 0 0 4 4 M18 5h3v2a4 4 0 0 1-4 4 M12 12v5 M8 21h8 M10 17h4",
     info: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 10v7 M12 7h.01",
-    clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2"
+    clock: "M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20z M12 6v6l4 2",
+    moon: "M21 14.4A7.5 7.5 0 0 1 9.6 3a8.7 8.7 0 1 0 11.4 11.4z",
+    sun: "M12 5V2 M12 22v-3 M5 12H2 M22 12h-3 M6.3 6.3 4.2 4.2 M19.8 19.8l-2.1-2.1 M17.7 6.3l2.1-2.1 M4.2 19.8l2.1-2.1 M12 16a4 4 0 1 0 0-8 4 4 0 0 0 0 8z"
   };
 
   return (

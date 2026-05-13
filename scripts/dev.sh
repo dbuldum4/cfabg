@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 if ! command -v bun >/dev/null 2>&1; then
-  echo "Bun is required to run Aqua Blokus locally." >&2
+  echo "Bun is required to run Cool Frutiger Aero Block Game locally." >&2
   echo "Install Bun from https://bun.sh, then rerun this script." >&2
   exit 1
 fi
