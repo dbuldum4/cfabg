@@ -32,7 +32,21 @@ const DEFAULT_SETUP = {
 const DEFAULT_TRANSFORM = { rotation: 0, flipX: false, flipY: false };
 
 function createPieceTransforms() {
-  return Object.fromEntries(PIECES.map((piece) => [piece.id, { ...DEFAULT_TRANSFORM }]));
+  return {};
+}
+
+function getPieceTransform(pieceTransforms, playerId, pieceId) {
+  return pieceTransforms[playerId]?.[pieceId] ?? DEFAULT_TRANSFORM;
+}
+
+function setPieceTransform(pieceTransforms, playerId, pieceId, transform) {
+  return {
+    ...pieceTransforms,
+    [playerId]: {
+      ...(pieceTransforms[playerId] ?? {}),
+      [pieceId]: { ...transform }
+    }
+  };
 }
 
 function makeGame(setup) {
@@ -95,10 +109,10 @@ function App() {
   const previewPiece = previewPieceId ? PIECE_MAP.get(previewPieceId) : null;
   const setupPlayers = useMemo(() => getPlayersForCount(setup.playerCount), [setup.playerCount]);
   const selectedTransform = selectedPieceId
-    ? (pieceTransforms[selectedPieceId] ?? DEFAULT_TRANSFORM)
+    ? getPieceTransform(pieceTransforms, currentPlayer?.id, selectedPieceId)
     : DEFAULT_TRANSFORM;
   const previewTransform = previewPieceId
-    ? (pieceTransforms[previewPieceId] ?? DEFAULT_TRANSFORM)
+    ? getPieceTransform(pieceTransforms, currentPlayer?.id, previewPieceId)
     : DEFAULT_TRANSFORM;
   const previewCells = useMemo(
     () => (previewPiece ? transformCells(previewPiece, previewTransform) : []),
@@ -124,6 +138,7 @@ function App() {
 
   const legalMoveCount = useMemo(() => {
     if (!currentPlayer || game.status !== "playing") return 0;
+    if (typeof game.legalMoveCount === "number") return game.legalMoveCount;
     return getLegalMoveCount(game, currentPlayer.id);
   }, [game, currentPlayer]);
   const hoverMove = useMemo(() => {
@@ -334,7 +349,10 @@ function App() {
   function updatePlayerCount(playerCount) {
     setSetup((previous) => ({
       ...previous,
-      playerCount
+      playerCount,
+      players: Array.from({ length: playerCount }, (_, index) =>
+        previous.players[index] ?? DEFAULT_SETUP.players[index] ?? { type: "cpu", difficulty: "medium" }
+      )
     }));
   }
 
@@ -385,7 +403,7 @@ function App() {
       const parsed = JSON.parse(raw);
       const nextGame = hydrateGame(parsed.game);
       setSetup(parsed.setup ?? setup);
-      setGame(nextGame);
+      setGame({ ...nextGame, startedAt: Date.now() });
       setHistory([]);
       setSelectedPieceId(nextGame.players[nextGame.currentPlayerIndex]?.remaining[0] ?? null);
       setPieceTransforms(createPieceTransforms());
@@ -394,55 +412,53 @@ function App() {
       setHintMove(null);
       setNotice("Loaded local save.");
       setScreen("play");
+      setElapsed(0);
     } catch {
       setNotice("Saved game could not be loaded.");
     }
   }
 
   function rotatePiece(pieceId = selectedPieceId) {
-    if (!pieceId) return;
+    if (!pieceId || !currentPlayer) return;
     setSelectedPieceId(pieceId);
     setPieceTransforms((previous) => {
-      const current = previous[pieceId] ?? DEFAULT_TRANSFORM;
-      return {
-        ...previous,
-        [pieceId]: {
-          ...current,
-          rotation: (current.rotation + 90) % 360
-        }
-      };
+      const current = getPieceTransform(previous, currentPlayer.id, pieceId);
+      return setPieceTransform(previous, currentPlayer.id, pieceId, {
+        ...current,
+        rotation: (current.rotation + 90) % 360
+      });
     });
     setHintMove(null);
   }
 
   function flipHorizontal() {
-    if (!selectedPieceId) return;
-    setPieceTransforms((previous) => ({
-      ...previous,
-      [selectedPieceId]: {
-        ...(previous[selectedPieceId] ?? DEFAULT_TRANSFORM),
-        flipX: !(previous[selectedPieceId] ?? DEFAULT_TRANSFORM).flipX
-      }
-    }));
+    if (!selectedPieceId || !currentPlayer) return;
+    setPieceTransforms((previous) => {
+      const current = getPieceTransform(previous, currentPlayer.id, selectedPieceId);
+      return setPieceTransform(previous, currentPlayer.id, selectedPieceId, {
+        ...current,
+        flipX: !current.flipX
+      });
+    });
     setHintMove(null);
   }
 
   function flipVertical() {
-    if (!selectedPieceId) return;
-    setPieceTransforms((previous) => ({
-      ...previous,
-      [selectedPieceId]: {
-        ...(previous[selectedPieceId] ?? DEFAULT_TRANSFORM),
-        flipY: !(previous[selectedPieceId] ?? DEFAULT_TRANSFORM).flipY
-      }
-    }));
+    if (!selectedPieceId || !currentPlayer) return;
+    setPieceTransforms((previous) => {
+      const current = getPieceTransform(previous, currentPlayer.id, selectedPieceId);
+      return setPieceTransform(previous, currentPlayer.id, selectedPieceId, {
+        ...current,
+        flipY: !current.flipY
+      });
+    });
     setHintMove(null);
   }
 
   function placeAt(cell, pieceId = selectedPieceId) {
     const piece = pieceId ? PIECE_MAP.get(pieceId) : null;
     if (game.status !== "playing" || currentPlayer.type !== "human" || !piece) return;
-    const pieceTransform = pieceTransforms[pieceId] ?? DEFAULT_TRANSFORM;
+    const pieceTransform = getPieceTransform(pieceTransforms, currentPlayer.id, pieceId);
 
     const result = placeMove(game, currentPlayer.id, {
       pieceId: piece.id,
@@ -485,10 +501,9 @@ function App() {
       return;
     }
     setSelectedPieceId(move.pieceId);
-    setPieceTransforms((previous) => ({
-      ...previous,
-      [move.pieceId]: { ...move.transform }
-    }));
+    setPieceTransforms((previous) =>
+      setPieceTransform(previous, currentPlayer.id, move.pieceId, move.transform)
+    );
     setHintMove(move);
     setNotice(`Hint: ${PIECE_MAP.get(move.pieceId).label} can fit on the glowing preview.`);
   }
@@ -800,7 +815,7 @@ function App() {
         >
           <MiniPiece
             piece={PIECE_MAP.get(pointerDrag.pieceId)}
-            transform={pieceTransforms[pointerDrag.pieceId] ?? DEFAULT_TRANSFORM}
+            transform={getPieceTransform(pieceTransforms, currentPlayer?.id, pointerDrag.pieceId)}
             color={currentPlayer?.colors}
           />
         </div>
@@ -924,58 +939,89 @@ const PiecePanel = memo(function PiecePanel({
       </div>
 
       <div className="piece-bank" aria-label="Draggable remaining pieces">
-        {PIECES.map((piece) => {
-          const available = remainingPieces.has(piece.id);
-          const playable = available && currentPlayer?.type === "human" && gameStatus === "playing";
-          const pieceTransform = pieceTransforms[piece.id] ?? DEFAULT_TRANSFORM;
-          return (
-            <div
-              key={piece.id}
-              className={[
-                "piece-token",
-                selectedPieceId === piece.id ? "selected" : "",
-                dragPieceId === piece.id ? "dragging" : "",
-                !available ? "spent" : ""
-              ]
-                .filter(Boolean)
-                .join(" ")}
-              style={playerStyle(currentPlayer)}
-            >
-              <button
-                type="button"
-                className="piece-dragger"
-                data-testid={`piece-${piece.id}`}
-                draggable={playable}
-                disabled={!playable}
-                onClick={() => playable && onSelect(piece.id)}
-                onPointerDown={(event) => onPointerDown(event, piece.id)}
-                onDragStart={(event) => onDragStart(event, piece.id)}
-                onDragEnd={onDragEnd}
-                title={`${piece.label}, ${piece.size} squares`}
-              >
-                <MiniPiece
-                  piece={piece}
-                  transform={pieceTransform}
-                  color={currentPlayer?.colors}
-                  disabled={!available}
-                />
-                <span>{piece.label}</span>
-              </button>
-              <button
-                type="button"
-                className="piece-rotate"
-                data-testid={`rotate-piece-${piece.id}`}
-                disabled={!playable}
-                onClick={() => onRotate(piece.id)}
-                title={`Rotate ${piece.label}`}
-              >
-                <Icon name="rotate" />
-              </button>
-            </div>
-          );
-        })}
+        {PIECES.map((piece) => (
+          <PieceToken
+            key={piece.id}
+            piece={piece}
+            player={currentPlayer}
+            pieceTransform={getPieceTransform(pieceTransforms, currentPlayer?.id, piece.id)}
+            selected={selectedPieceId === piece.id}
+            dragging={dragPieceId === piece.id}
+            available={remainingPieces.has(piece.id)}
+            playable={
+              remainingPieces.has(piece.id) &&
+              currentPlayer?.type === "human" &&
+              gameStatus === "playing"
+            }
+            onSelect={onSelect}
+            onRotate={onRotate}
+            onDragStart={onDragStart}
+            onDragEnd={onDragEnd}
+            onPointerDown={onPointerDown}
+          />
+        ))}
       </div>
     </aside>
+  );
+});
+
+const PieceToken = memo(function PieceToken({
+  piece,
+  player,
+  pieceTransform,
+  selected,
+  dragging,
+  available,
+  playable,
+  onSelect,
+  onRotate,
+  onDragStart,
+  onDragEnd,
+  onPointerDown
+}) {
+  return (
+    <div
+      className={[
+        "piece-token",
+        selected ? "selected" : "",
+        dragging ? "dragging" : "",
+        !available ? "spent" : ""
+      ]
+        .filter(Boolean)
+        .join(" ")}
+      style={playerStyle(player)}
+    >
+      <button
+        type="button"
+        className="piece-dragger"
+        data-testid={`piece-${piece.id}`}
+        draggable={playable}
+        disabled={!playable}
+        onClick={() => playable && onSelect(piece.id)}
+        onPointerDown={(event) => onPointerDown(event, piece.id)}
+        onDragStart={(event) => onDragStart(event, piece.id)}
+        onDragEnd={onDragEnd}
+        title={`${piece.label}, ${piece.size} squares`}
+      >
+        <MiniPiece
+          piece={piece}
+          transform={pieceTransform}
+          color={player?.colors}
+          disabled={!available}
+        />
+        <span>{piece.label}</span>
+      </button>
+      <button
+        type="button"
+        className="piece-rotate"
+        data-testid={`rotate-piece-${piece.id}`}
+        disabled={!playable}
+        onClick={() => onRotate(piece.id)}
+        title={`Rotate ${piece.label}`}
+      >
+        <Icon name="rotate" />
+      </button>
+    </div>
   );
 });
 
@@ -1224,7 +1270,9 @@ function winnerText(game) {
   const winners = game.players.filter((player) => game.winnerIds.includes(player.id));
   if (winners.length === 0) return "No winner recorded.";
   if (winners.length === 1) return `${winners[0].shortName} wins.`;
-  return `${winners.map((player) => player.shortName).join(" and ")} tie.`;
+  const names = winners.map((player) => player.shortName);
+  const last = names.pop();
+  return `${names.join(", ")} and ${last} tie.`;
 }
 
 function titleCase(value) {

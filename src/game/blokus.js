@@ -139,7 +139,7 @@ export function createGame(config = {}) {
     return createPlayerState(player, playerConfig);
   });
 
-  return {
+  const game = {
     board: createEmptyBoard(config.boardSize ?? BOARD_SIZE),
     boardSize: config.boardSize ?? BOARD_SIZE,
     players,
@@ -149,6 +149,8 @@ export function createGame(config = {}) {
     winnerIds: [],
     log: ["New local game started."]
   };
+  game.legalMoveCount = getLegalMoveCount(game, game.players[game.currentPlayerIndex].id);
+  return game;
 }
 
 export function cloneGame(game) {
@@ -163,7 +165,8 @@ export function cloneGame(game) {
       lastPieceId: player.lastPieceId ?? null
     })),
     winnerIds: [...game.winnerIds],
-    log: [...game.log]
+    log: [...game.log],
+    legalMoveCount: game.legalMoveCount
   };
 }
 
@@ -372,6 +375,8 @@ export function placeMove(game, playerId, move) {
 
   advanceTurn(next);
   updateGameStatus(next);
+  next.legalMoveCount =
+    next.status === "playing" ? getLegalMoveCount(next, next.players[next.currentPlayerIndex].id) : 0;
 
   return { game: next, move: validation };
 }
@@ -396,6 +401,8 @@ export function passPlayer(game, playerId, forced = false) {
 
   advanceTurn(next);
   updateGameStatus(next);
+  next.legalMoveCount =
+    next.status === "playing" ? getLegalMoveCount(next, next.players[next.currentPlayerIndex].id) : 0;
 
   return { game: next };
 }
@@ -417,10 +424,11 @@ export function updateGameStatus(game) {
 
   if (activePlayers.length === 0 || game.players.every((player) => player.passed || !hasAnyLegalMove(game, player.id))) {
     game.status = "finished";
-    const bestScore = Math.max(...game.players.map((player) => getFinalScore(player).score));
-    game.winnerIds = game.players
-      .filter((player) => getFinalScore(player).score === bestScore)
-      .map((player) => player.id);
+    const scores = game.players.map((player) => ({ player, final: getFinalScore(player) }));
+    const bestScore = Math.max(...scores.map(({ final }) => final.score));
+    game.winnerIds = scores
+      .filter(({ final }) => final.score === bestScore)
+      .map(({ player }) => player.id);
     game.log = [`Game over. ${game.winnerIds.length > 1 ? "Tie game" : `${game.winnerIds[0]} wins`}.`, ...game.log].slice(0, 8);
   }
 }
@@ -570,7 +578,7 @@ export function serializeGame(game) {
 
 export function hydrateGame(raw) {
   const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-  return {
+  const game = {
     ...parsed,
     board: parsed.board.map((row) => row.map((cell) => (cell ? { ...cell } : null))),
     players: parsed.players.map((player) => ({
@@ -583,4 +591,7 @@ export function hydrateGame(raw) {
     log: [...(parsed.log ?? [])],
     winnerIds: [...(parsed.winnerIds ?? [])]
   };
+  game.legalMoveCount =
+    parsed.legalMoveCount ?? getLegalMoveCount(game, game.players[game.currentPlayerIndex].id);
+  return game;
 }
